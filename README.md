@@ -11,6 +11,7 @@
 - 高级模式支持同时提取多个关键词，按输入顺序生成 `sn1`、`sn2`… 多组命名捕获
 - 指定样例路径中的任意字段作为目标，自动在测试路径中提取对应位置的字段
 - 支持追加多条测试路径，横向比较各规则的泛化能力
+- 候选规则区支持整页滚动：滚轮在表达式、匹配结果等任何位置都有效，按系统「每次滚动行数」设置做像素级缓动，内容连续滑动而不是逐格跳动
 - 所有规则均把指定的目标值当作变量处理，而非写死为字面文本
 - 同时输出深舟规则（Python re 兼容的字符类）与 JS 验证版（带 `u` flag 的完整正则字面量，可直接粘贴到浏览器控制台）
 - 三种引擎分别使用兼容的字符类：本地验证用 Unicode 属性类、深舟用 `[^\W_]`、JS 用 `\p{}` 并附 `u` flag，避免 POSIX 字符类跨引擎失配
@@ -41,7 +42,7 @@ go install github.com/akavel/rsrc@latest
 rsrc -manifest app.manifest -arch amd64 -o rsrc.syso
 
 # 静态编译为单个 exe，运行时无控制台窗口
-CGO_ENABLED=0 go build -trimpath -ldflags="-H windowsgui -s -w -X main.Version=2.2.0" -o shenzhou-tag-regex.exe .
+CGO_ENABLED=0 go build -trimpath -ldflags="-H windowsgui -s -w -X main.Version=2.3.0" -o shenzhou-tag-regex.exe .
 ```
 
 `-H windowsgui` 使程序运行时不创建控制台黑窗口；`-X main.Version=` 用于注入版本号，窗口标题、界面顶部与 `-version` 参数均显示该值，需与脚本顶部的 `VERSION` 保持同步。`rsrc.syso` 已随仓库提供，通常可直接编译。
@@ -102,6 +103,7 @@ go test ./...
 .
 ├── main.go           程序入口与命令行模式
 ├── gui.go            原生窗口界面
+├── scroll.go         候选规则区的滚轮滚动与缓动
 ├── core.go           规则生成核心逻辑
 ├── core_test.go      单元测试与输出对拍
 ├── app.manifest      Windows 清单（Common Controls 6 / DPI）

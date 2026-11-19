@@ -35,6 +35,8 @@ type App struct {
 	multiPanel  *walk.Composite
 	multiEdit   *walk.TextEdit
 	testEdit    *walk.TextEdit
+	resultView  *walk.ScrollView
+	scroller    *scroller
 	cards       []*ruleCard
 }
 
@@ -127,6 +129,7 @@ func (a *App) build() error {
 
 			Label{Text: "候选规则（每条都把指定值按变量处理，附验证结果）", Font: Font{Bold: true}},
 			ScrollView{
+				AssignTo: &a.resultView,
 				Layout:   VBox{MarginsZero: true, Spacing: 10},
 				MinSize:  Size{0, 300},
 				Children: resultChildren,
@@ -136,6 +139,14 @@ func (a *App) build() error {
 
 	if err != nil {
 		return err
+	}
+
+	// 卡片里的表达式、匹配结果都是 EDIT 控件，会把滚轮消息消化在控件内部，
+	// 导致光标停在其中时页面滚不动。统一交给滚动容器处理。
+	a.scroller = newScroller(a.resultView)
+	for _, c := range a.cards {
+		a.scroller.watch(c.ruleEdit)
+		a.scroller.watch(c.verify)
 	}
 
 	a.fitWindow()
