@@ -8,7 +8,7 @@ echo ============================================
 echo.
 
 REM 版本号：发布新版本时修改此处
-set "VERSION=1.1.0"
+set "VERSION=1.1.1"
 set "OUTPUT=shenzhou-tag-regex.exe"
 
 echo [1/4] 检查 Go 环境...

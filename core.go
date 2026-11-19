@@ -251,6 +251,26 @@ type verdict struct {
 	Value string
 }
 
+// formatVerdict 把一条验证结果格式化为单行展示文本。
+func formatVerdict(v verdict) string {
+	if !v.Ok {
+		return v.Label + "：✗ " + v.Value
+	}
+	return v.Label + "：✓ " + v.Value
+}
+
+// buildVerifyText 构造单条规则的验证文本：先样例，再按输入顺序逐条列出测试路径。
+// 每条结果独占一行，返回的行数恒为 1 + len(tests)。
+func buildVerifyText(py, samplePath string, tests []string) string {
+	var b strings.Builder
+	b.WriteString(formatVerdict(makeVerdict("样例", py, samplePath)))
+	for j, t := range tests {
+		b.WriteString("\r\n")
+		b.WriteString(formatVerdict(makeVerdict(fmt.Sprintf("测试%d", j+1), py, t)))
+	}
+	return b.String()
+}
+
 // makeVerdict 验证一条规则在指定路径上的提取结果。
 func makeVerdict(label, py, path string) verdict {
 	values, ok, err := validate(py, path)

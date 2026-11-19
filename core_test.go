@@ -1,7 +1,9 @@
 package main
 
 import (
+	"fmt"
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -189,6 +191,31 @@ func TestMakeVerdicts(t *testing.T) {
 		}
 		if toJsRegex(rule.Py) == rule.Py {
 			t.Errorf("rule %s js version not converted", rule.Name)
+		}
+	}
+}
+
+// 多条测试路径时，验证文本必须逐条列出全部结果，不能遗漏。
+func TestBuildVerifyTextMultipleTests(t *testing.T) {
+	res := buildRules(samplePath, "5B6D-4E8F")
+	if res.Error != "" {
+		t.Fatal(res.Error)
+	}
+	for _, rule := range res.Rules {
+		tests := []string{sampleTest, traceSample, noAnchorPath, traceVariant}
+		text := buildVerifyText(rule.Py, samplePath, tests)
+		lines := strings.Split(text, "\r\n")
+		if got, want := len(lines), len(tests)+1; got != want {
+			t.Errorf("rule %s line count = %d, want %d; text=%q", rule.Name, got, want, text)
+		}
+		for j := range tests {
+			label := fmt.Sprintf("测试%d：", j+1)
+			if !strings.Contains(text, label) {
+				t.Errorf("rule %s missing %s in text=%q", rule.Name, label, text)
+			}
+		}
+		if !strings.Contains(text, "样例：") {
+			t.Errorf("rule %s missing 样例 line in text=%q", rule.Name, text)
 		}
 	}
 }

@@ -10,7 +10,7 @@ import (
 )
 
 // Version 为程序版本号，可在构建时通过 -ldflags "-X main.Version=x.y.z" 覆盖。
-var Version = "1.1.0"
+var Version = "1.1.1"
 
 // appTitle 返回带版本号的窗口标题。
 func appTitle() string {

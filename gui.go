@@ -63,7 +63,9 @@ func (a *App) build() error {
 							HSpacer{},
 						},
 					},
-					TextEdit{AssignTo: &card.verify, ReadOnly: true, MinSize: Size{0, 34}},
+					// 验证结果随测试路径条数增长，使用 CompactHeight 让控件按文本内容
+					// 自动增高，避免多条测试路径时结果被截断（原固定高度仅约两行）。
+					TextEdit{AssignTo: &card.verify, ReadOnly: true, CompactHeight: true},
 				},
 			},
 		)
@@ -211,23 +213,8 @@ func (a *App) onGenerate() {
 		card.ruleEdit.SetText(rule.Py)
 		card.py = rule.Py
 		card.js = toJsRegex(rule.Py)
-
-		var b strings.Builder
-		v := makeVerdict("样例", rule.Py, a.pathEdit.Text())
-		b.WriteString(formatVerdict(v))
-		for j, t := range tests {
-			b.WriteString("\r\n")
-			b.WriteString(formatVerdict(makeVerdict(fmt.Sprintf("测试%d", j+1), rule.Py, t)))
-		}
-		card.verify.SetText(b.String())
+		card.verify.SetText(buildVerifyText(rule.Py, a.pathEdit.Text(), tests))
 	}
-}
-
-func formatVerdict(v verdict) string {
-	if !v.Ok {
-		return v.Label + "：✗ " + v.Value
-	}
-	return v.Label + "：✓ " + v.Value
 }
 
 func (a *App) Run() int {
