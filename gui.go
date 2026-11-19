@@ -11,6 +11,8 @@ import (
 const (
 	winW = 900
 	winH = 700
+	// 候选规则数：极简 / 边界 / 精确 / 严格 / 定长。
+	cardCount = 5
 )
 
 type ruleCard struct {
@@ -25,11 +27,15 @@ type ruleCard struct {
 }
 
 type App struct {
-	mw       *walk.MainWindow
-	pathEdit *walk.TextEdit
-	tgtEdit  *walk.LineEdit
-	testEdit *walk.TextEdit
-	cards    []*ruleCard
+	mw          *walk.MainWindow
+	pathEdit    *walk.TextEdit
+	tgtEdit     *walk.LineEdit
+	normalPanel *walk.Composite
+	advanceChk  *walk.CheckBox
+	multiPanel  *walk.Composite
+	multiEdit   *walk.TextEdit
+	testEdit    *walk.TextEdit
+	cards       []*ruleCard
 }
 
 func newApp() *App {
@@ -37,11 +43,11 @@ func newApp() *App {
 }
 
 func (a *App) build() error {
-	a.cards = make([]*ruleCard, 4)
+	a.cards = make([]*ruleCard, cardCount)
 
-	// 结果区：四张卡片放进滚动容器。
-	resultChildren := make([]Widget, 0, 4)
-	for i := 0; i < 4; i++ {
+	// 结果区：所有卡片放进滚动容器。
+	resultChildren := make([]Widget, 0, cardCount)
+	for i := 0; i < cardCount; i++ {
 		card := &ruleCard{}
 		a.cards[i] = card
 		pyHandler := a.makeCopyHandler(i, true)
@@ -84,8 +90,26 @@ func (a *App) build() error {
 				Children: []Widget{
 					Label{Text: "样例路径"},
 					TextEdit{AssignTo: &a.pathEdit, MinSize: Size{0, 52}},
-					Label{Text: "要提取的变量值（示例）"},
-					LineEdit{AssignTo: &a.tgtEdit, MaxLength: 512, MinSize: Size{0, 26}},
+					Composite{
+						AssignTo: &a.normalPanel,
+						Layout:   VBox{MarginsZero: true, Spacing: 4},
+						Children: []Widget{
+							Label{Text: "要提取的变量值（示例）"},
+							LineEdit{AssignTo: &a.tgtEdit, MaxLength: 512, MinSize: Size{0, 26}},
+						},
+					},
+					CheckBox{AssignTo: &a.advanceChk,
+						Text:      "高级模式：同时提取多个关键词（按路径中出现顺序，每行一个）",
+						OnClicked: a.onToggleAdvanced},
+					Composite{
+						AssignTo: &a.multiPanel,
+						Visible:  false,
+						Layout:   VBox{MarginsZero: true, Spacing: 4},
+						Children: []Widget{
+							Label{Text: "多个关键词（每行一个；生成的规则含 sn1、sn2… 多组结果）"},
+							TextEdit{AssignTo: &a.multiEdit, MinSize: Size{0, 64}},
+						},
+					},
 					Label{Text: "测试路径（可选，每行一条，用于横向比较规则的泛化能力）"},
 					TextEdit{AssignTo: &a.testEdit, MinSize: Size{0, 48}},
 				},
@@ -171,6 +195,9 @@ func (a *App) onSample() {
 func (a *App) onClear() {
 	a.pathEdit.SetText("")
 	a.tgtEdit.SetText("")
+	a.multiEdit.SetText("")
+	a.advanceChk.SetChecked(false)
+	a.onToggleAdvanced()
 	a.testEdit.SetText("")
 	for _, c := range a.cards {
 		c.nameLabel.SetText("")
@@ -181,8 +208,7 @@ func (a *App) onClear() {
 	}
 }
 
-func (a *App) testPaths() []string {
-	raw := a.testEdit.Text()
+func splitLines(raw string) []string {
 	lines := strings.Split(raw, "\n")
 	out := make([]string, 0, len(lines))
 	for _, line := range lines {
@@ -194,8 +220,25 @@ func (a *App) testPaths() []string {
 	return out
 }
 
+func (a *App) testPaths() []string {
+	return splitLines(a.testEdit.Text())
+}
+
+// onToggleAdvanced 在普通模式与多关键词模式之间切换输入区。
+func (a *App) onToggleAdvanced() {
+	on := a.advanceChk.Checked()
+	a.normalPanel.SetVisible(!on)
+	a.multiPanel.SetVisible(on)
+	a.mw.RequestLayout()
+}
+
 func (a *App) onGenerate() {
-	res := buildRules(a.pathEdit.Text(), a.tgtEdit.Text())
+	var res GenerateResult
+	if a.advanceChk.Checked() {
+		res = buildAdvancedRules(a.pathEdit.Text(), splitLines(a.multiEdit.Text()))
+	} else {
+		res = buildRules(a.pathEdit.Text(), a.tgtEdit.Text())
+	}
 	if res.Error != "" {
 		a.warn(res.Error)
 		return

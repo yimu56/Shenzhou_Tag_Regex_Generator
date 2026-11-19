@@ -22,8 +22,8 @@ func checkRules(t *testing.T, path, target, wantSample, testPath, wantTest strin
 	if res.Error != "" {
 		t.Fatalf("buildRules error: %s", res.Error)
 	}
-	if len(res.Rules) != 4 {
-		t.Fatalf("rule count = %d, want 4", len(res.Rules))
+	if len(res.Rules) != 5 {
+		t.Fatalf("rule count = %d, want 5", len(res.Rules))
 	}
 	for i, rule := range res.Rules {
 		vs, ok, err := validate(rule.Py, path)
@@ -33,6 +33,11 @@ func checkRules(t *testing.T, path, target, wantSample, testPath, wantTest strin
 		}
 		if got := joinedValues(vs); got != wantSample {
 			t.Errorf("rule[%d](%s) sample = %q, want %q", i, rule.Name, got, wantSample)
+		}
+		// 定长版按目标字段长度严格约束，测试路径字段长度不同时预期不匹配，
+		// 因此只校验样例，跳过测试路径断言。
+		if rule.Name == "定长版" {
+			continue
 		}
 		vt, ok, err := validate(rule.Py, testPath)
 		if err != nil || !ok {
@@ -229,4 +234,69 @@ func stringsContains(s, sub string) bool {
 		}
 		return false
 	})()
+}
+
+func TestBuildTemplateFixed(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"20261119", "F{8}"},
+		{"7C4E9A21-5B6D", `F{8}-F{4}`},
+		{"A+B", `F{1}\+F{1}`},
+		{"中文ABC", "F{5}"},
+	}
+	for _, tc := range cases {
+		if got := buildTemplateFixed(tc.in, "F"); got != tc.want {
+			t.Errorf("buildTemplateFixed(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// 定长版只取与目标等宽的内容，不会把时间戳后面的字段一并吞掉。
+func TestFixedLengthRule(t *testing.T) {
+	path := `E:/AOI追溯/产线3/2026_11_19/7C4E9A21-5B6D-4E8F-9A0C-2D3E4F5A6B7C+LOTADSQWEZX+STATION12_rev2_20261119093015.png`
+	res := buildRules(path, "20261119")
+	if res.Error != "" {
+		t.Fatal(res.Error)
+	}
+	fixed := res.Rules[len(res.Rules)-1]
+	if fixed.Name != "定长版" || !strings.Contains(fixed.Py, `{8}`) {
+		t.Fatalf("fixed rule = %+v", fixed)
+	}
+	vs, ok, err := validate(fixed.Py, path)
+	if err != nil || !ok {
+		t.Fatalf("fixed rule not matched: ok=%v err=%v py=%q", ok, err, fixed.Py)
+	}
+	if got := joinedValues(vs); got != "20261119" {
+		t.Errorf("fixed rule value = %q, want 20261119", got)
+	}
+	variant := `E:/AOI追溯/产线3/2026_11_20/7C4E9A21-5B6D-4E8F-9A0C-2D3E4F5A6B7C+LOTADSQWEZX+STATION12_rev2_20261120993015.png`
+	vs2, ok, err := validate(fixed.Py, variant)
+	if err != nil || !ok {
+		t.Fatalf("fixed rule variant not matched: ok=%v err=%v", ok, err)
+	}
+	if got := joinedValues(vs2); got != "20261120" {
+		t.Errorf("fixed rule variant value = %q, want 20261120", got)
+	}
+}
+
+// 高级模式按输入顺序合并多个关键词为 sn1..snN 多组。
+func TestAdvancedRulesMultipleTargets(t *testing.T) {
+	path := `E:/AOI追溯/产线3/2026_11_19/7C4E9A21-5B6D-4E8F-9A0C-2D3E4F5A6B7C+LOTADSQWEZX+STATION12_rev2_20261119093015.png`
+	res := buildAdvancedRules(path, []string{"7C4E9A21-5B6D", "9A0C-2D3E4F5A6B7C"})
+	if res.Error != "" {
+		t.Fatal(res.Error)
+	}
+	if len(res.Rules) != 5 {
+		t.Fatalf("advanced rule count = %d, want 5", len(res.Rules))
+	}
+	want := "sn1=7C4E9A21-5B6D, sn2=9A0C-2D3E4F5A6B7C"
+	for _, rule := range res.Rules {
+		vs, ok, err := validate(rule.Py, path)
+		if err != nil || !ok {
+			t.Errorf("rule %s: ok=%v err=%v py=%q", rule.Name, ok, err, rule.Py)
+			continue
+		}
+		if got := joinedValues(vs); got != want {
+			t.Errorf("rule %s value = %q, want %q", rule.Name, got, want)
+		}
+	}
 }
