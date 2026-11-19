@@ -1,0 +1,24 @@
+# 编译产物
+shenzhou-tag-regex
+shenzhou-tag-regex.exe
+*.exe
+*.dll
+*.so
+*.dylib
+
+# 测试与临时文件
+*.test
+*.out
+*.log
+coverage.txt
+gui-error.log
+
+# 编辑器与系统文件
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Go 工作区
+go.work
+go.work.sum
