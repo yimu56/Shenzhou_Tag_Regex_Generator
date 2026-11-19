@@ -12,12 +12,25 @@
 - 指定样例路径中的任意字段作为目标，自动在测试路径中提取对应位置的字段
 - 支持追加多条测试路径，横向比较各规则的泛化能力
 - 所有规则均把指定的目标值当作变量处理，而非写死为字面文本
-- 同时输出 Python 风格命名组规则（深舟使用）与 JavaScript 风格命名组规则（本地验证使用）
+- 同时输出深舟规则（Python re 兼容的字符类）与 JS 验证版（带 `u` flag 的完整正则字面量，可直接粘贴到浏览器控制台）
+- 三种引擎分别使用兼容的字符类：本地验证用 Unicode 属性类、深舟用 `[^\W_]`、JS 用 `\p{}` 并附 `u` flag，避免 POSIX 字符类跨引擎失配
 - 提供命令行模式，便于脚本调用
 
 ## 构建
 
-需要 Go 1.26 及以上版本。生成 `rsrc.syso` 后 Go 会自动链接，使控件呈现现代外观并正确支持高 DPI。
+需要 Go 1.26 及以上版本。`rsrc.syso` 会在编译期自动链接，使控件呈现现代外观并正确支持高 DPI。
+
+### 使用编译脚本（推荐）
+
+Windows 环境下直接双击 `一键编译.bat`，或在项目目录执行：
+
+```bat
+一键编译.bat
+```
+
+脚本依次完成：检查 Go 环境 → 确认 `rsrc.syso`（缺失时调用 `rsrc` 生成）→ 运行单元测试 → 按脚本顶部的 `VERSION` 参数编译 exe。发布新版本时修改该变量即可。
+
+### 手动编译
 
 ```bash
 git clone https://github.com/yimu56/shenzhou-tag-regex.git
@@ -28,10 +41,10 @@ go install github.com/akavel/rsrc@latest
 rsrc -manifest app.manifest -arch amd64 -o rsrc.syso
 
 # 静态编译为单个 exe，运行时无控制台窗口
-CGO_ENABLED=0 go build -trimpath -ldflags="-H windowsgui -s -w -X main.Version=2.1.0" -o shenzhou-tag-regex.exe .
+CGO_ENABLED=0 go build -trimpath -ldflags="-H windowsgui -s -w -X main.Version=2.2.0" -o shenzhou-tag-regex.exe .
 ```
 
-`-H windowsgui` 使程序运行时不创建控制台黑窗口；`-X main.Version=` 用于注入版本号，窗口标题、界面顶部与 `-version` 参数均显示该值。发布新版本时改这里即可。`rsrc.syso` 已随仓库提供，通常可直接编译。
+`-H windowsgui` 使程序运行时不创建控制台黑窗口；`-X main.Version=` 用于注入版本号，窗口标题、界面顶部与 `-version` 参数均显示该值，需与脚本顶部的 `VERSION` 保持同步。`rsrc.syso` 已随仓库提供，通常可直接编译。
 
 ## 运行
 
@@ -66,7 +79,7 @@ shenzhou-tag-regex.exe \
 | 严格版 | 字段仅限字母数字，排除中文及特殊字符 | 字段名确定不含中文或特殊字符 |
 | 定长版 | 每个字段长度与目标一致，只取等宽内容 | 目标后紧跟同类型字段（如日期后接时分秒），需要严格限定提取宽度 |
 
-字段定义为连续的非标点、非空白字符；标点、符号或空白都能作为字段边界。定位分隔符由目标在样例中的位置自动识别，并统计其在目标之前出现的次数，因此同一个文件名中不同位置的字段可以分别定位。
+字段定义为连续的非标点、非符号、非空白字符（含中文）；标点、符号或空白都能作为字段边界，三个引擎的字符类写法不同但口径一致，中文标点同样会被正确识别为边界。定位分隔符由目标在样例中的位置自动识别，并统计其在目标之前出现的次数，因此同一个文件名中不同位置的字段可以分别定位。
 
 ## 在深舟中使用
 

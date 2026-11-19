@@ -26,12 +26,17 @@ type GenerateResult struct {
 }
 
 const (
-	// 字段 = 连续的非标点、非空白字符（字母数字、中文等）。
-	// 采用 POSIX 字符类：任何标点或空白都能成为字段边界，跨业务结构通用，
-	// 不再依赖 UUID、"_v3_"、"+" 等具体结构。
-	fieldAtom  = `[^[:punct:][:space:]]`
-	fieldToken = fieldAtom + `*`
-	// 严格字段：仅限字母数字，供"严格版"候选使用。
+	// 字段 = 连续的非标点、非符号、非空白字符（字母数字、中文等）。
+	// 三个引擎的字符类写法互不兼容，必须分别生成：
+	//   - Go 验证：Unicode 属性类，与 isSep 的 unicode.IsPunct/IsSymbol/IsSpace 口径对齐；
+	//   - 深舟规则：Python re 既不支持 POSIX 类也不支持 \p{}，用 [^\W_]（Unicode 字母数字，排除下划线）；
+	//   - JS 验证：用 \p{} 并必须带 u flag，由 toJsRegex 输出完整正则字面量。
+	// POSIX 写法 [^[:punct:][:space:]] 在 JS 与 Python 中都会被错误解析，已全面废弃。
+	fieldAtom   = `[^\p{P}\p{S}\p{Z}\s\v\x{0085}]`
+	fieldToken  = fieldAtom + `*`
+	fieldAtomPy = `[^\W_]`
+	fieldAtomJs = `[^\s\p{P}\p{S}\p{Z}]`
+	// 严格字段：仅限字母数字，三个引擎写法一致。
 	strictAtom  = `[0-9A-Za-z]`
 	strictToken = strictAtom + `*`
 )
@@ -61,8 +66,8 @@ func escapeRegex(s string) string {
 }
 
 // isSep 判断字符是否为字段分隔符。
-// 标点（如 - . _ /）与符号（如 + = | ^）都视为分隔符，
-// 因为 Unicode 中 "+" 属于符号而非标点，仅判断 IsPunct 会漏掉它。
+// 标点、符号与空白都视为分隔符（Unicode 全口径），与 fieldAtom 的
+// Unicode 属性类保持同一口径，消除中文字段边界判断不一致的问题。
 func isSep(r rune) bool {
 	return unicode.IsPunct(r) || unicode.IsSymbol(r) || unicode.IsSpace(r)
 }
@@ -355,9 +360,21 @@ func buildAdvancedRules(pathText string, targets []string) GenerateResult {
 	return GenerateResult{Rules: rules, Anchor: anchor, File: partsList[0].file}
 }
 
-// toJsRegex 把 Python 风格命名组转换成 JavaScript 风格命名组。
+// toPythonRegex 把 Go 验证用正则转换为深舟平台的 Python 风格规则。
+// 命名组本身就是 Python 风格，只需把字段字符类换成 Python re 兼容的写法。
+// 实测 [^[:punct:][:space:]] 在 Python re 中会匹配失败，[^\W_] 才能正确
+// 匹配中文与字母数字字段。
+func toPythonRegex(py string) string {
+	return strings.ReplaceAll(py, fieldAtom, fieldAtomPy)
+}
+
+// toJsRegex 把 Go 验证用正则转换为 JS 验证版。
+// JS 不认 POSIX 字符类，改为 Unicode 属性类并附加 u flag；输出可直接
+// 粘贴到浏览器控制台或 Node 的完整正则字面量 /pattern/u。
 func toJsRegex(py string) string {
-	return strings.ReplaceAll(py, "(?P<", "(?<")
+	s := strings.ReplaceAll(py, "(?P<", "(?<")
+	s = strings.ReplaceAll(s, fieldAtom, fieldAtomJs)
+	return "/" + s + "/u"
 }
 
 // validate 使用 Go 正则引擎验证规则，并返回命名捕获组的值。

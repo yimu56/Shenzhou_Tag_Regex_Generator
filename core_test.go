@@ -131,8 +131,17 @@ func TestAllRulesCompile(t *testing.T) {
 			if _, err := regexp.Compile(rule.Py); err != nil {
 				t.Errorf("rule[%d] Go compile failed: %q: %v", i, rule.Py, err)
 			}
-			if _, err := regexp.Compile(toJsRegex(rule.Py)); err != nil {
-				t.Errorf("rule[%d] JS compile failed: %q: %v", i, toJsRegex(rule.Py), err)
+			py := toPythonRegex(rule.Py)
+			if strings.Contains(py, "[:punct:]") || strings.Contains(py, "[:space:]") ||
+				strings.Contains(py, `\p{P}`) {
+				t.Errorf("rule[%d] Python rule not compatible: %q", i, py)
+			}
+			js := toJsRegex(rule.Py)
+			if !strings.HasPrefix(js, "/") || !strings.HasSuffix(js, "/u") {
+				t.Errorf("rule[%d] JS literal malformed: %q", i, js)
+			}
+			if strings.Contains(js, "[:punct:]") || strings.Contains(js, "[:space:]") {
+				t.Errorf("rule[%d] JS rule still uses POSIX class: %q", i, js)
 			}
 		}
 	}
@@ -297,6 +306,58 @@ func TestAdvancedRulesMultipleTargets(t *testing.T) {
 		}
 		if got := joinedValues(vs); got != want {
 			t.Errorf("rule %s value = %q, want %q", rule.Name, got, want)
+		}
+	}
+}
+
+// isSep 与 fieldAtom 必须同一口径：分隔符不被字段类匹配，非分隔符必须被匹配。
+func TestFieldAtomMatchesIsSep(t *testing.T) {
+	re := regexp.MustCompile(fieldAtom)
+	chars := []rune{'A', '1', '中', '-', '+', '，', '。', ' ', '\t', 'Ａ', '③', '\u0085'}
+	for _, r := range chars {
+		s := string(r)
+		matched := re.MatchString(s)
+		if isSep(r) == matched {
+			t.Errorf("rune %q: isSep=%v fieldAtomMatch=%v, 口径不一致", s, isSep(r), matched)
+		}
+	}
+}
+
+// 中文标点场景：模板把中文标点当分隔符原样保留，三个引擎的规则都能正确提取。
+func TestChinesePunctuationBoundary(t *testing.T) {
+	path := `D:/数据/A1，B2_20261119.png`
+	res := buildRules(path, "A1，B2")
+	if res.Error != "" {
+		t.Fatal(res.Error)
+	}
+	for i, rule := range res.Rules {
+		vs, ok, err := validate(rule.Py, path)
+		if err != nil || !ok {
+			t.Errorf("rule[%d](%s): ok=%v err=%v py=%q", i, rule.Name, ok, err, rule.Py)
+			continue
+		}
+		if got := joinedValues(vs); got != "A1，B2" {
+			t.Errorf("rule[%d](%s) = %q, want A1，B2", i, rule.Name, got)
+		}
+	}
+}
+
+// 三个引擎输出的规则不得再出现任一引擎专有的字符类写法。
+func TestEngineRuleConversion(t *testing.T) {
+	res := buildRules(`D:/数据/A1，B2_20261119.png`, "A1，B2")
+	for i, rule := range res.Rules {
+		py := toPythonRegex(rule.Py)
+		js := toJsRegex(rule.Py)
+		for _, s := range []string{py, js} {
+			if strings.Contains(s, "[:punct:]") || strings.Contains(s, "[:space:]") {
+				t.Errorf("rule[%d] leaked POSIX class: %q", i, s)
+			}
+		}
+		if strings.Contains(py, `\p{`) {
+			t.Errorf("rule[%d] Python rule leaked Go-only \\p{}: %q", i, py)
+		}
+		if !strings.HasSuffix(js, "/u") {
+			t.Errorf("rule[%d] JS rule missing u flag: %q", i, js)
 		}
 	}
 }

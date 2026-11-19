@@ -10,7 +10,7 @@ import (
 )
 
 // Version 为程序版本号，可在构建时通过 -ldflags "-X main.Version=x.y.z" 覆盖。
-var Version = "2.1.0"
+var Version = "2.2.0"
 
 // appTitle 返回带版本号的窗口标题。
 func appTitle() string {
@@ -73,7 +73,7 @@ func runCLI(path, target string, tests []string) string {
 		}
 		fmt.Fprintf(&b, "[%d] %s%s\r\n", i+1, rule.Name, recommend)
 		fmt.Fprintf(&b, "    说明：%s\r\n", rule.Desc)
-		fmt.Fprintf(&b, "    深舟规则：%s\r\n", rule.Py)
+		fmt.Fprintf(&b, "    深舟规则：%s\r\n", toPythonRegex(rule.Py))
 		fmt.Fprintf(&b, "    JS 验证版：%s\r\n", toJsRegex(rule.Py))
 		vd := makeVerdict("样例", rule.Py, path)
 		fmt.Fprintf(&b, "    样例验证：%s %s\r\n", mark(vd.Ok), vd.Value)
