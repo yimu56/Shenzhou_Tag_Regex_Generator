@@ -26,7 +26,7 @@ go install github.com/akavel/rsrc@latest
 rsrc -manifest app.manifest -arch amd64 -o rsrc.syso
 
 # 静态编译为单个 exe，运行时无控制台窗口
-CGO_ENABLED=0 go build -trimpath -ldflags="-H windowsgui -s -w -X main.Version=1.0.0" -o shenzhou-tag-regex.exe .
+CGO_ENABLED=0 go build -trimpath -ldflags="-H windowsgui -s -w -X main.Version=1.1.0" -o shenzhou-tag-regex.exe .
 ```
 
 `-H windowsgui` 使程序运行时不创建控制台黑窗口；`-X main.Version=` 用于注入版本号，窗口标题、界面顶部与 `-version` 参数均显示该值。发布新版本时改这里即可。`rsrc.syso` 已随仓库提供，通常可直接编译。
