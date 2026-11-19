@@ -52,7 +52,7 @@ if errorlevel 1 (
 
 echo.
 echo [4/4] 编译程序（版本 %VERSION%）...
-go build -trimpath -ldflags="-s -w -X main.Version=%VERSION%" -o %OUTPUT% .
+go build -trimpath -ldflags="-H windowsgui -s -w -X main.Version=%VERSION%" -o %OUTPUT% .
 if errorlevel 1 (
     echo 错误：编译失败。
     pause

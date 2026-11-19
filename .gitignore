@@ -12,6 +12,7 @@ shenzhou-tag-regex.exe
 *.log
 coverage.txt
 gui-error.log
+规则结果.txt
 
 # 编辑器与系统文件
 .vscode/

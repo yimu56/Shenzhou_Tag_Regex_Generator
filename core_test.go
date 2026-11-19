@@ -249,3 +249,41 @@ func TestMakeVerdicts(t *testing.T) {
 		}
 	}
 }
+
+// 目标值从 UUID 尾段开始时，UUID 前缀片段必须整体通配，
+// 否则前缀里的字母会被写死，测试路径的 UUID 不同便无法匹配。
+func TestUUIDPrefixTarget(t *testing.T) {
+	path := `E:/AOI追溯/产线3/2026_11_19/7C4E9A21-5B6D-4E8F-9A0C-2D3E4F5A6B7C+LOT20261119008+STATION12_rev2_20261119093015.png`
+	target := "2D3E4F5A6B7C+LOT20261119008"
+	testPath := `E:/AOI追溯/产线3/2026_11_20/FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF+LOT20261120999+STATION07_rev2_20261120104533.png`
+	want := "2D3E4F5A6B7C+LOT20261119008"
+	wantTest := "FFFFFFFFFFFF+LOT20261120999"
+
+	res := buildRules(path, target)
+	if res.Error != "" {
+		t.Fatal(res.Error)
+	}
+	if len(res.Rules) != 4 {
+		t.Fatalf("rule count = %d", len(res.Rules))
+	}
+
+	// 前三条规则应能在两条路径上分别提取到对应位置的值。
+	for i := 0; i < 3; i++ {
+		values, ok, err := validate(res.Rules[i].Py, path)
+		if err != nil || !ok || values["sn"] != want {
+			t.Errorf("rule[%d] sample sn = %q, want %q, ok=%v err=%v", i, values["sn"], want, ok, err)
+		}
+		values, ok, err = validate(res.Rules[i].Py, testPath)
+		if err != nil || !ok || values["sn"] != wantTest {
+			t.Errorf("rule[%d] test sn = %q, want %q, ok=%v err=%v", i, values["sn"], wantTest, ok, err)
+		}
+	}
+}
+
+func TestTextToPatternUUIDPrefix(t *testing.T) {
+	in := "7C4E9A21-5B6D-4E8F-9A0C-"
+	want := `[^+]*-`
+	if got := textToPattern(in); got != want {
+		t.Errorf("textToPattern(%q) = %q, want %q", in, got, want)
+	}
+}

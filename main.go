@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"syscall"
 	"unsafe"
 )
@@ -11,25 +12,35 @@ import (
 // Version 为程序版本号，可在构建时通过 -ldflags "-X main.Version=x.y.z" 覆盖。
 var Version = "1.0.0"
 
-func init() {
-	// Go 输出 UTF-8，Windows 控制台默认 GBK，切到 65001 避免中文乱码。
-	kernel32 := syscall.NewLazyDLL("kernel32.dll")
-	kernel32.NewProc("SetConsoleOutputCP").Call(65001)
-}
-
 // appTitle 返回带版本号的窗口标题。
 func appTitle() string {
 	return "标签提取规则生成器 v" + Version
 }
 
-// hideConsole 在 GUI 模式下隐藏控制台窗口（双击启动时只一闪）。
-func hideConsole() {
-	kernel32 := syscall.NewLazyDLL("kernel32.dll")
-	hwnd, _, _ := kernel32.NewProc("GetConsoleWindow").Call()
-	if hwnd != 0 {
-		user32 := syscall.NewLazyDLL("user32.dll")
-		user32.NewProc("ShowWindow").Call(hwnd, 0) // SW_HIDE
+// msgBox 用系统消息框显示信息（GUI 版本无控制台）。
+func msgBox(text, title string) {
+	user32 := syscall.NewLazyDLL("user32.dll")
+	user32.NewProc("MessageBoxW").Call(0,
+		uintptr(unsafe.Pointer(utf16Ptr(text))),
+		uintptr(unsafe.Pointer(utf16Ptr(title))),
+		0x40) // MB_ICONINFORMATION
+}
+
+// walkFatal 用系统对话框显示致命错误。
+func walkFatal(err error) {
+	user32 := syscall.NewLazyDLL("user32.dll")
+	user32.NewProc("MessageBoxW").Call(0,
+		uintptr(unsafe.Pointer(utf16Ptr(err.Error()))),
+		uintptr(unsafe.Pointer(utf16Ptr("启动失败"))),
+		0x10) // MB_ICONHAND
+}
+
+func utf16Ptr(s string) *uint16 {
+	u, err := syscall.UTF16FromString(s)
+	if err != nil {
+		u = []uint16{0}
 	}
+	return &u[0]
 }
 
 func mark(ok bool) string {
@@ -46,31 +57,33 @@ func anchorText(anchor string) string {
 	return anchor
 }
 
-func runCLI(path, target string, tests []string) {
+// runCLI 生成结果文本并返回字符串，供写入文件，不依赖控制台。
+func runCLI(path, target string, tests []string) string {
+	var b strings.Builder
 	res := buildRules(path, target)
 	if res.Error != "" {
-		fmt.Println(res.Error)
-		return
+		return res.Error
 	}
-	fmt.Printf("锚点：%s\n", anchorText(res.Anchor))
-	fmt.Printf("文件名：%s\n\n", res.File)
+	fmt.Fprintf(&b, "锚点：%s\r\n", anchorText(res.Anchor))
+	fmt.Fprintf(&b, "文件名：%s\r\n\r\n", res.File)
 	for i, rule := range res.Rules {
 		recommend := ""
 		if rule.Rec {
 			recommend = "（推荐）"
 		}
-		fmt.Printf("[%d] %s%s\n", i+1, rule.Name, recommend)
-		fmt.Printf("    说明：%s\n", rule.Desc)
-		fmt.Printf("    深舟规则：%s\n", rule.Py)
-		fmt.Printf("    JS 验证版：%s\n", toJsRegex(rule.Py))
+		fmt.Fprintf(&b, "[%d] %s%s\r\n", i+1, rule.Name, recommend)
+		fmt.Fprintf(&b, "    说明：%s\r\n", rule.Desc)
+		fmt.Fprintf(&b, "    深舟规则：%s\r\n", rule.Py)
+		fmt.Fprintf(&b, "    JS 验证版：%s\r\n", toJsRegex(rule.Py))
 		vd := makeVerdict("样例", rule.Py, path)
-		fmt.Printf("    样例验证：%s %s\n", mark(vd.Ok), vd.Value)
+		fmt.Fprintf(&b, "    样例验证：%s %s\r\n", mark(vd.Ok), vd.Value)
 		for j, t := range tests {
 			vd = makeVerdict(fmt.Sprintf("测试%d", j+1), rule.Py, t)
-			fmt.Printf("    测试%d验证：%s %s\n", j+1, mark(vd.Ok), vd.Value)
+			fmt.Fprintf(&b, "    测试%d验证：%s %s\r\n", j+1, mark(vd.Ok), vd.Value)
 		}
-		fmt.Println()
+		b.WriteString("\r\n")
 	}
+	return b.String()
 }
 
 func main() {
@@ -81,23 +94,23 @@ func main() {
 	flag.Parse()
 
 	if *showVer {
-		fmt.Println("标签提取规则生成器 v" + Version)
+		msgBox("标签提取规则生成器 "+appTitle(), appTitle())
 		return
 	}
 
 	if *path != "" || *target != "" {
 		var testList []string
 		if *tests != "" {
-			for _, t := range splitTests(*tests) {
-				testList = append(testList, t)
-			}
+			testList = splitTests(*tests)
 		}
-		runCLI(*path, *target, testList)
+		out := runCLI(*path, *target, testList)
+		if err := os.WriteFile("规则结果.txt", []byte(out), 0644); err != nil {
+			msgBox("结果写入失败："+err.Error(), "错误")
+			return
+		}
+		msgBox("规则已写入 规则结果.txt", appTitle())
 		return
 	}
-
-	// GUI 模式：隐藏随双击弹出的控制台。
-	hideConsole()
 
 	app := newApp()
 	if err := app.build(); err != nil {
@@ -120,23 +133,4 @@ func splitTests(s string) []string {
 	}
 	out = append(out, string(cur))
 	return out
-}
-
-// walkFatal 用系统对话框显示致命错误（GUI 模式下控制台已隐藏）。
-func walkFatal(err error) {
-	title := utf16Ptr("启动失败")
-	msg := utf16Ptr(err.Error())
-	user32 := syscall.NewLazyDLL("user32.dll")
-	user32.NewProc("MessageBoxW").Call(0,
-		uintptr(unsafe.Pointer(msg)),
-		uintptr(unsafe.Pointer(title)),
-		0x10) // MB_ICONHAND
-}
-
-func utf16Ptr(s string) *uint16 {
-	u, err := syscall.UTF16FromString(s)
-	if err != nil {
-		u = []uint16{0}
-	}
-	return &u[0]
 }

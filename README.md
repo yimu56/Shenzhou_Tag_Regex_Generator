@@ -24,11 +24,11 @@ cd shenzhou-tag-regex
 go install github.com/akavel/rsrc@latest
 rsrc -manifest app.manifest -arch amd64 -o rsrc.syso
 
-# 静态编译为单个 exe（GUI 模式下程序会自行隐藏控制台）
-CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.Version=1.0.0" -o shenzhou-tag-regex.exe .
+# 静态编译为单个 exe，运行时无控制台窗口
+CGO_ENABLED=0 go build -trimpath -ldflags="-H windowsgui -s -w -X main.Version=1.0.0" -o shenzhou-tag-regex.exe .
 ```
 
-`-X main.Version=` 用于注入版本号，窗口标题、界面顶部与 `-version` 参数均显示该值；发布新版本时改这里即可。`rsrc.syso` 已随仓库提供，通常可直接编译。
+`-H windowsgui` 使程序运行时不创建控制台黑窗口；`-X main.Version=` 用于注入版本号，窗口标题、界面顶部与 `-version` 参数均显示该值。发布新版本时改这里即可。`rsrc.syso` 已随仓库提供，通常可直接编译。
 
 ## 运行
 
@@ -38,10 +38,10 @@ CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.Version=1.0.0" -o shenz
 
 ### 命令行模式
 
-提供 `-path` 或 `-target` 参数时进入命令行模式，不打开窗口：
+提供 `-path` 或 `-target` 参数时进入命令行模式，不打开窗口。程序无控制台，结果写入当前目录的 `规则结果.txt` 并弹出提示：
 
 ```bash
-shenzhou-tag-regex.exe -version      # 显示版本号
+shenzhou-tag-regex.exe -version      # 弹窗显示版本号
 
 shenzhou-tag-regex.exe \
   -path 'E:\AOI追溯\产线3\2026_11_19\7C4E9A21-5B6D-4E8F-9A0C-2D3E4F5A6B7C+LOT20261119008+STATION12_rev2_20261119093015.png' \

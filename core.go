@@ -35,6 +35,10 @@ var (
 
 	reDigits2 = regexp.MustCompile(`\d{2,}`)
 	reSep     = regexp.MustCompile(`[\\/]`)
+
+	// UUID 前缀片段：如 7C4E9A21-5B6D-4E8F-9A0C-。目标值从 UUID 尾段
+	// 开始时，这一段必须以尾部连字符为锚点整体通配，否则会写死其中的字母。
+	reUUIDPrefix = regexp.MustCompile(`^[0-9a-fA-F]{2,}(-[0-9a-fA-F]{2,})+-$`)
 )
 
 var escapePairs = strings.NewReplacer(
@@ -93,6 +97,12 @@ func textToPattern(s string) string {
 		}
 		if looksVariable(seg) {
 			out = append(out, "[^+]*?")
+			continue
+		}
+		// UUID 前缀片段整体通配，保留尾部连字符作为定位锚点。
+		// 用贪婪的 [^+]* 确保匹配到最后一个连字符，使捕获组从尾段开始。
+		if reUUIDPrefix.MatchString(seg) {
+			out = append(out, `[^+]*-`)
 			continue
 		}
 		locs := reNumberish.FindAllStringIndex(seg, -1)
