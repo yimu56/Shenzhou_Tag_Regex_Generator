@@ -1,10 +1,12 @@
 package main
 
 import (
+	"fmt"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Rule 表示一条候选正则规则。
@@ -23,23 +25,18 @@ type GenerateResult struct {
 	Error  string
 }
 
-var (
-	rePureDigits  = regexp.MustCompile(`^[0-9]{4,}$`)
-	reUUID        = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
-	reDate        = regexp.MustCompile(`^\d{4}[-_]\d{2}[-_]\d{2}$`)
-	reLongDigits  = regexp.MustCompile(`^\d{6,}$`)
-	reAlphaDigits = regexp.MustCompile(`^[A-Za-z]+\d{4,}$`)
-
-	// 与浏览器版本一致的变量识别顺序：UUID、日期、数字。
-	reNumberish = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|\d{4}[-_]\d{2}[-_]\d{2}|\d+`)
-
-	reDigits2 = regexp.MustCompile(`\d{2,}`)
-	reSep     = regexp.MustCompile(`[\\/]`)
-
-	// UUID 前缀片段：如 7C4E9A21-5B6D-4E8F-9A0C-。目标值从 UUID 尾段
-	// 开始时，这一段必须以尾部连字符为锚点整体通配，否则会写死其中的字母。
-	reUUIDPrefix = regexp.MustCompile(`^[0-9a-fA-F]{2,}(-[0-9a-fA-F]{2,})+-$`)
+const (
+	// 字段 = 连续的非标点、非空白字符（字母数字、中文等）。
+	// 采用 POSIX 字符类：任何标点或空白都能成为字段边界，跨业务结构通用，
+	// 不再依赖 UUID、"_v3_"、"+" 等具体结构。
+	fieldAtom  = `[^[:punct:][:space:]]`
+	fieldToken = fieldAtom + `*`
+	// 严格字段：仅限字母数字，供"严格版"候选使用。
+	strictAtom  = `[0-9A-Za-z]`
+	strictToken = strictAtom + `*`
 )
+
+var reSep = regexp.MustCompile(`[\\/]`)
 
 var escapePairs = strings.NewReplacer(
 	`\`, `\\`,
@@ -63,76 +60,77 @@ func escapeRegex(s string) string {
 	return escapePairs.Replace(s)
 }
 
-// looksVariable 判断一段文本是否整体呈现为变量特征。
-func looksVariable(seg string) bool {
-	if rePureDigits.MatchString(seg) {
-		return true
-	}
-	if reUUID.MatchString(seg) {
-		return true
-	}
-	if reDate.MatchString(seg) {
-		return true
-	}
-	if reLongDigits.MatchString(seg) {
-		return true
-	}
-	if reAlphaDigits.MatchString(seg) {
-		return true
-	}
-	return false
+// isSep 判断字符是否为字段分隔符。
+// 标点（如 - . _ /）与符号（如 + = | ^）都视为分隔符，
+// 因为 Unicode 中 "+" 属于符号而非标点，仅判断 IsPunct 会漏掉它。
+func isSep(r rune) bool {
+	return unicode.IsPunct(r) || unicode.IsSymbol(r) || unicode.IsSpace(r)
 }
 
-// textToPattern 把固定文本转换成正则片段；按 + 分段，变量段通配。
-func textToPattern(s string) string {
-	if s == "" {
-		return ""
+// buildTemplate 把目标串转成字段结构模板：字段替换为通配类，分隔符原样保留。
+// 例如 "7C4E9A21-5B6D" -> "<field>-<field>"；"A+B" -> "<field>\+<field>"。
+func buildTemplate(target, field string) string {
+	var b strings.Builder
+	rs := []rune(target)
+	for i := 0; i < len(rs); {
+		if isSep(rs[i]) {
+			j := i
+			for j < len(rs) && isSep(rs[j]) {
+				j++
+			}
+			b.WriteString(escapeRegex(string(rs[i:j])))
+			i = j
+			continue
+		}
+		j := i
+		for j < len(rs) && !isSep(rs[j]) {
+			j++
+		}
+		b.WriteString(field)
+		i = j
 	}
-	segs := strings.Split(s, "+")
-	out := make([]string, 0, len(segs))
-	for _, seg := range segs {
-		if seg == "" {
-			out = append(out, "")
-			continue
-		}
-		if looksVariable(seg) {
-			out = append(out, "[^+]*?")
-			continue
-		}
-		// UUID 前缀片段整体通配，保留尾部连字符作为定位锚点。
-		// 用贪婪的 [^+]* 确保匹配到最后一个连字符，使捕获组从尾段开始。
-		if reUUIDPrefix.MatchString(seg) {
-			out = append(out, `[^+]*-`)
-			continue
-		}
-		locs := reNumberish.FindAllStringIndex(seg, -1)
-		var b strings.Builder
-		last := 0
-		for _, loc := range locs {
-			b.WriteString(escapeRegex(seg[last:loc[0]]))
-			b.WriteString("[^+]*?")
-			last = loc[1]
-		}
-		b.WriteString(escapeRegex(seg[last:]))
-		out = append(out, b.String())
-	}
-	return strings.Join(out, `\+`)
+	return b.String()
 }
 
-// shortAnchor 从目标之后的文本中，提取紧邻数字串之前的短字面量作为锚点。
-func shortAnchor(after string) string {
-	if after == "" {
+// locateInfo 描述目标在样例文件名中的结构位置。
+type locateInfo struct {
+	sep   string // 目标起始之前最近的分隔符字符
+	count int    // 该分隔符在目标之前出现的次数
+	after string // 目标结束之后紧跟的分隔符字符
+}
+
+// locate 计算目标在文件名中的定位信息。idx、end 为字节索引。
+func locate(file string, idx, end int) locateInfo {
+	rs := []rune(file)
+	ri := utf8.RuneCountInString(file[:idx])
+	re := utf8.RuneCountInString(file[:end])
+
+	info := locateInfo{}
+	for i := ri - 1; i >= 0; i-- {
+		if isSep(rs[i]) {
+			info.sep = string(rs[i])
+			break
+		}
+	}
+	if info.sep != "" {
+		for i := 0; i < ri; i++ {
+			if string(rs[i]) == info.sep {
+				info.count++
+			}
+		}
+	}
+	if re < len(rs) && isSep(rs[re]) {
+		info.after = string(rs[re])
+	}
+	return info
+}
+
+// buildPrefix 生成"跳过 N 个定位分隔符"的前缀，其间内容宽松匹配。
+func buildPrefix(sep string, count int) string {
+	if sep == "" || count <= 0 {
 		return ""
 	}
-	loc := reDigits2.FindStringIndex(after)
-	if loc == nil || loc[0] <= 1 {
-		return ""
-	}
-	anchor := after[:loc[0]]
-	if len(anchor) > 12 {
-		return ""
-	}
-	return anchor
+	return fmt.Sprintf(`(?:.*?%s){%d}`, escapeRegex(sep), count)
 }
 
 // buildRules 根据样例路径与目标值生成四条候选规则。
@@ -148,95 +146,58 @@ func buildRules(pathText, target string) GenerateResult {
 
 	parts := reSep.Split(path, -1)
 	file := parts[len(parts)-1]
-	prefixDirs := parts[:len(parts)-1]
+	dirRe := ""
+	if len(parts) > 1 {
+		dirRe = `.*[\\\/]`
+	}
+
 	idx := strings.Index(file, tgt)
 	if idx < 0 {
 		return GenerateResult{Error: "指定字符不在文件名中，请检查是否与路径一致"}
 	}
+	loc := locate(file, idx, idx+len(tgt))
 
-	before := file[:idx]
-	after := file[idx+len(tgt):]
-	tSegs := strings.Split(tgt, "+")
-
-	dirRe := ""
-	if len(prefixDirs) > 0 {
-		dirRe = `.*[\\\/]`
-	}
-
-	beforeRe := textToPattern(before)
-	afterRe := textToPattern(after)
-	anchor := shortAnchor(after)
-	anchorRe := ""
-	if anchor != "" {
-		anchorRe = escapeRegex(anchor)
-	}
-
-	targetGreedy := joinFilled(len(tSegs), "[^+]+")
-	lazyParts := make([]string, len(tSegs))
-	for i := range lazyParts {
-		if i < len(tSegs)-1 {
-			lazyParts[i] = "[^+]+"
-		} else {
-			lazyParts[i] = "[^+]+?"
-		}
-	}
-	targetLazyTail := strings.Join(lazyParts, `\+`)
-
-	beforeCount := 0
-	for _, s := range strings.Split(before, "+") {
-		if s != "" {
-			beforeCount++
-		}
+	template := buildTemplate(tgt, fieldToken)
+	strictTemplate := buildTemplate(tgt, strictToken)
+	prefix := buildPrefix(loc.sep, loc.count)
+	afterRe := ""
+	if loc.after != "" {
+		afterRe = escapeRegex(loc.after)
 	}
 
 	anchorDesc := "（无）"
-	if anchor != "" {
-		anchorDesc = "「" + anchor + "」"
+	if loc.sep != "" {
+		anchorDesc = fmt.Sprintf("字段分隔「%s」，跳过 %d 段", loc.sep, loc.count)
 	}
 
-	rules := make([]Rule, 0, 4)
-	rules = append(rules, Rule{
-		Name: "极简版",
-		Rec:  true,
-		Desc: "贪婪目标段 + 短锚点" + anchorDesc + " + 宽松结尾，贴近手写习惯",
-		Py:   dirRe + beforeRe + `(?P<sn>` + targetGreedy + `)` + anchorRe + `.*`,
-	})
+	capLoose := `(?P<sn>` + template + `)`
+	capStrict := `(?P<sn>` + strictTemplate + `)`
 
-	lazyPy := targetLazyTail
-	lazyDesc := "目标末段遇短锚点「" + anchor + "」即停，定位更精确"
-	if anchor == "" {
-		lazyPy = targetGreedy
-		lazyDesc = "无可用锚点，自动退化为贪婪匹配，避免只截到首字符"
+	rules := []Rule{
+		{
+			Name: "极简版",
+			Rec:  true,
+			Desc: "按字段结构定位并宽松结尾，适用于绝大多数场景",
+			Py:   dirRe + prefix + capLoose + `.*`,
+		},
+		{
+			Name: "边界版",
+			Desc: "用目标后紧跟的分隔符锚定右边界，避免吞掉后缀",
+			Py:   dirRe + prefix + capLoose + afterRe + `.*`,
+		},
+		{
+			Name: "精确版",
+			Desc: "匹配到目标字段即止，不强制匹配后续内容",
+			Py:   dirRe + prefix + capLoose,
+		},
+		{
+			Name: "严格版",
+			Desc: "字段仅限字母数字，排除中文及特殊字符，结构最严格",
+			Py:   dirRe + prefix + capStrict + `.*`,
+		},
 	}
-	rules = append(rules, Rule{
-		Name: "非贪婪版",
-		Desc: lazyDesc,
-		Py:   dirRe + beforeRe + `(?P<sn>` + lazyPy + `)` + anchorRe + `.*`,
-	})
-	rules = append(rules, Rule{
-		Name: "完整结构版",
-		Desc: "后缀结构化通配并锚定结尾，对结构一致性要求高",
-		Py:   dirRe + beforeRe + `(?P<sn>` + targetLazyTail + `)` + afterRe + `$`,
-	})
-	rules = append(rules, Rule{
-		Name: "纯段位版",
-		Desc: "只按 + 分段数定位目标，不依赖锚点或后缀内容",
-		Py:   dirRe + `(?:[^+]+\+){` + strconv.Itoa(beforeCount) + `}(?P<sn>` + targetGreedy + `)(?:\+[^+]+)*$`,
-	})
 
-	return GenerateResult{Rules: rules, Anchor: anchor, File: file}
-}
-
-// joinFilled 生成 n 段相同文本并用 + 连接。
-func joinFilled(n int, unit string) string {
-	if n <= 0 {
-		return ""
-	}
-	parts := make([]string, n)
-	for i := range parts {
-		parts[i] = unit
-	}
-	return strings.Join(parts, `\+`)
+	return GenerateResult{Rules: rules, Anchor: anchorDesc, File: file}
 }
 
 // toJsRegex 把 Python 风格命名组转换成 JavaScript 风格命名组。
