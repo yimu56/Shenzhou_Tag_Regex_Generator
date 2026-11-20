@@ -8,11 +8,11 @@ import (
 )
 
 const (
-	samplePath    = `E:\AOI追溯\产线3\2026_11_19\7C4E9A21-5B6D-4E8F-9A0C-2D3E4F5A6B7C+LOT20261119008+STATION12_rev2_20261119093015.png`
-	sampleTest    = `E:\AOI追溯\产线3\2026_11_20\FAFADFFF-FFFF-FFFF-AVCD-FFFFFFFFFFFF+LOT20261120999+STATION07_rev2_20261120104533.png`
-	traceSample   = `X:\Trace\2026-05-04\GluePath.x9600a.enhancement.1\ABC12345W0001KLS+DEF67890GHIJ_v3_1303_0_75908_1_10__20260501022200.png`
-	traceVariant  = `X:\Trace\2099-01-01\GluePath.x9600a.enhancement.9\ZZZZZ99999W9999KLS+YYYYY88888GHIJ_v3_9999_2_88888_3_4__20990101010101.png`
-	noAnchorPath  = `D:\线A\2026_08_04\AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE+XSN0001KLS+YSEC0001+7`
+	samplePath   = `E:\AOI追溯\产线3\2026_11_19\7C4E9A21-5B6D-4E8F-9A0C-2D3E4F5A6B7C+LOT20261119008+STATION12_rev2_20261119093015.png`
+	sampleTest   = `E:\AOI追溯\产线3\2026_11_20\FAFADFFF-FFFF-FFFF-AVCD-FFFFFFFFFFFF+LOT20261120999+STATION07_rev2_20261120104533.png`
+	traceSample  = `X:\Trace\2026-05-04\GluePath.x9600a.enhancement.1\ABC12345W0001KLS+DEF67890GHIJ_v3_1303_0_75908_1_10__20260501022200.png`
+	traceVariant = `X:\Trace\2099-01-01\GluePath.x9600a.enhancement.9\ZZZZZ99999W9999KLS+YYYYY88888GHIJ_v3_9999_2_88888_3_4__20990101010101.png`
+	noAnchorPath = `D:\线A\2026_08_04\AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE+XSN0001KLS+YSEC0001+7`
 )
 
 // checkRules 对样例路径与测试路径逐条规则断言提取结果。
@@ -131,10 +131,16 @@ func TestAllRulesCompile(t *testing.T) {
 			if _, err := regexp.Compile(rule.Py); err != nil {
 				t.Errorf("rule[%d] Go compile failed: %q: %v", i, rule.Py, err)
 			}
-			py := toPythonRegex(rule.Py)
-			if strings.Contains(py, "[:punct:]") || strings.Contains(py, "[:space:]") ||
-				strings.Contains(py, `\p{P}`) {
-				t.Errorf("rule[%d] Python rule not compatible: %q", i, py)
+			py := toPlatformRegex(rule.Py)
+			// 深舟平台使用 Go 正则引擎，规则原样可用，不得再做字符类改写。
+			if py != rule.Py {
+				t.Errorf("rule[%d] platform rule altered: %q -> %q", i, rule.Py, py)
+			}
+			if _, err := regexp.Compile(py); err != nil {
+				t.Errorf("rule[%d] platform compile failed: %q: %v", i, py, err)
+			}
+			if strings.Contains(py, "[:punct:]") || strings.Contains(py, "[:space:]") {
+				t.Errorf("rule[%d] platform rule uses POSIX class: %q", i, py)
 			}
 			js := toJsRegex(rule.Py)
 			if !strings.HasPrefix(js, "/") || !strings.HasSuffix(js, "/u") {
@@ -342,22 +348,82 @@ func TestChinesePunctuationBoundary(t *testing.T) {
 	}
 }
 
-// 三个引擎输出的规则不得再出现任一引擎专有的字符类写法。
-func TestEngineRuleConversion(t *testing.T) {
-	res := buildRules(`D:/数据/A1，B2_20261119.png`, "A1，B2")
-	for i, rule := range res.Rules {
-		py := toPythonRegex(rule.Py)
-		js := toJsRegex(rule.Py)
-		for _, s := range []string{py, js} {
-			if strings.Contains(s, "[:punct:]") || strings.Contains(s, "[:space:]") {
-				t.Errorf("rule[%d] leaked POSIX class: %q", i, s)
+// 深舟平台规则必须与本地验证规则完全一致，且两者对样例的提取结果相同。
+// 该断言用于锁死「平台是 Go 引擎」这一结论：一旦有人再引入字符类改写，测试立即失败。
+func TestPlatformRuleEquivalent(t *testing.T) {
+	path := `E:\AOI追溯\产线3\2026_11_20\FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF+LOT20261120999+STATION07_rev2_20261120104533.png`
+	for _, tg := range []string{"LOT20261120999+STATION07", "产线3", "2026_11_20"} {
+		res := buildRules(path, tg)
+		if res.Error != "" {
+			t.Fatalf("buildRules(%q) error: %s", tg, res.Error)
+		}
+		for i, rule := range res.Rules {
+			py := toPlatformRegex(rule.Py)
+			if py != rule.Py {
+				t.Errorf("target %q rule[%d]: 平台规则被改写: %q", tg, i, py)
+			}
+			if _, err := regexp.Compile(py); err != nil {
+				t.Errorf("target %q rule[%d] 平台无法编译: %q: %v", tg, i, py, err)
+				continue
+			}
+			a, aok, _ := validate(rule.Py, path)
+			b, bok, _ := validate(py, path)
+			if aok != bok || joinedValues(a) != joinedValues(b) {
+				t.Errorf("target %q rule[%d] 平台与本地结果不一致: %v vs %v", tg, i, a, b)
 			}
 		}
-		if strings.Contains(py, `\p{`) {
-			t.Errorf("rule[%d] Python rule leaked Go-only \\p{}: %q", i, py)
+	}
+}
+
+// 目录段作为目标：「产线3」「2026_11_20」这类目录名也能提取，且可泛化到其他取值。
+func TestDirectorySegmentTarget(t *testing.T) {
+	sample := `E:\AOI追溯\产线3\2026_11_20\FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF+LOT20261120999+STATION07_rev2_20261120104533.png`
+	variant := `E:\AOI追溯\产线7\2026_12_01\AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA+LOT20261201999+STATION03_rev1_20261201093000.png`
+	cases := []struct {
+		target string
+		wantS  string
+		wantV  string
+	}{
+		{"产线3", "产线3", "产线7"},
+		{"2026_11_20", "2026_11_20", "2026_12_01"},
+	}
+	for _, tc := range cases {
+		res := buildRules(sample, tc.target)
+		if res.Error != "" {
+			t.Fatalf("target %q: buildRules error: %s", tc.target, res.Error)
 		}
-		if !strings.HasSuffix(js, "/u") {
-			t.Errorf("rule[%d] JS rule missing u flag: %q", i, js)
+		for i, rule := range res.Rules {
+			if rule.Name == "严格版" {
+				continue // 严格版仅限字母数字，中文目录段本就不适用
+			}
+			vs, ok, err := validate(rule.Py, sample)
+			if err != nil || !ok {
+				t.Errorf("target %q rule[%d](%s) 样例未匹配: err=%v py=%q", tc.target, i, rule.Name, err, rule.Py)
+				continue
+			}
+			if got := joinedValues(vs); got != tc.wantS {
+				t.Errorf("target %q rule[%d](%s) 样例 = %q, want %q", tc.target, i, rule.Name, got, tc.wantS)
+			}
+			vv, ok, err := validate(rule.Py, variant)
+			if err != nil || !ok {
+				t.Errorf("target %q rule[%d](%s) 变体未匹配: err=%v py=%q", tc.target, i, rule.Name, err, rule.Py)
+				continue
+			}
+			if got := joinedValues(vv); got != tc.wantV {
+				t.Errorf("target %q rule[%d](%s) 变体 = %q, want %q", tc.target, i, rule.Name, got, tc.wantV)
+			}
 		}
+	}
+}
+
+// 空捕获必须判为失败，否则会产出「能存进平台但抽不出内容」的废规则。
+func TestEmptyCaptureIsFailure(t *testing.T) {
+	path := `D:\a\产线3+b.png`
+	v := makeVerdict("样例", `(?P<sn>\d*)`, path)
+	if v.Ok {
+		t.Errorf("空捕获被判为成功: %+v", v)
+	}
+	if !strings.Contains(formatVerdict(v), "✗") {
+		t.Errorf("空捕获的展示文本缺少失败标记: %q", formatVerdict(v))
 	}
 }

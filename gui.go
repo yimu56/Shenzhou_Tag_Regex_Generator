@@ -264,7 +264,7 @@ func (a *App) onGenerate() {
 		}
 		card.nameLabel.SetText(title)
 		card.descLabel.SetText(rule.Desc)
-		card.py = toPythonRegex(rule.Py)
+		card.py = toPlatformRegex(rule.Py)
 		card.js = toJsRegex(rule.Py)
 		card.ruleEdit.SetText(card.py)
 		card.verify.SetText(buildVerifyText(rule.Py, a.pathEdit.Text(), tests))

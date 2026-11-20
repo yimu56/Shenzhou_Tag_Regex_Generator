@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -27,14 +28,14 @@ type GenerateResult struct {
 
 const (
 	// 字段 = 连续的非标点、非符号、非空白字符（字母数字、中文等）。
-	// 三个引擎的字符类写法互不兼容，必须分别生成：
-	//   - Go 验证：Unicode 属性类，与 isSep 的 unicode.IsPunct/IsSymbol/IsSpace 口径对齐；
-	//   - 深舟规则：Python re 既不支持 POSIX 类也不支持 \p{}，用 [^\W_]（Unicode 字母数字，排除下划线）；
+	//   - 深舟平台：Go 正则引擎（RE2）。经平台校验接口实测，\p{P}/\p{S}/\p{Z}
+	//     可直接使用，中文可正常匹配；平台不接受 lookahead、反向引用与中文组名。
+	//     因此深舟规则与本文件的字段类完全相同，无需做任何字符类转换。
 	//   - JS 验证：用 \p{} 并必须带 u flag，由 toJsRegex 输出完整正则字面量。
-	// POSIX 写法 [^[:punct:][:space:]] 在 JS 与 Python 中都会被错误解析，已全面废弃。
+	// 注意：Go 的 \w 仅等价于 ASCII 的 [0-9A-Za-z_]，[^\W_] 在深舟平台上
+	// 匹配不到任何中文，曾导致中文目标抽出空值或错误值，已废弃该写法。
 	fieldAtom   = `[^\p{P}\p{S}\p{Z}\s\v\x{0085}]`
 	fieldToken  = fieldAtom + `*`
-	fieldAtomPy = `[^\W_]`
 	fieldAtomJs = `[^\s\p{P}\p{S}\p{Z}]`
 	// 严格字段：仅限字母数字，三个引擎写法一致。
 	strictAtom  = `[0-9A-Za-z]`
@@ -206,33 +207,36 @@ var ruleVariants = []ruleVariant{
 		suffix: func(p ruleParts) string { return `.*` },
 	},
 	{
-		name: "边界版",
+		name:   "边界版",
 		desc:   "用目标后紧跟的分隔符锚定右边界，避免吞掉后缀",
 		cap:    func(p ruleParts) string { return p.capLoose },
 		suffix: func(p ruleParts) string { return p.afterRe + `.*` },
 	},
 	{
-		name: "精确版",
+		name:   "精确版",
 		desc:   "匹配到目标字段即止，不强制匹配后续内容",
 		cap:    func(p ruleParts) string { return p.capLoose },
 		suffix: func(p ruleParts) string { return `` },
 	},
 	{
-		name: "严格版",
+		name:   "严格版",
 		desc:   "字段仅限字母数字，排除中文及特殊字符，结构最严格",
 		cap:    func(p ruleParts) string { return p.capStrict },
 		suffix: func(p ruleParts) string { return `.*` },
 	},
 	{
-		name: "定长版",
+		name:   "定长版",
 		desc:   "每个字段长度与目标一致，只取等宽内容，不会吞掉相邻字段",
 		cap:    func(p ruleParts) string { return p.capFixed },
 		suffix: func(p ruleParts) string { return `.*` },
 	},
 }
 
-// buildRuleParts 计算单条目标的结构片段。from 为相对 file 的查找起点，
+// buildRuleParts 计算单条目标的结构片段。from 为相对整条样例路径的字节查找起点，
 // 单目标模式传 0；多目标模式传前一个目标的结束位置。
+//
+// 目标可以位于样例路径的任意一段：文件名段沿用「路径前缀 + 段内分隔符计数」的原有结构，
+// 目录段则按整条路径的路径分隔符计数定位，因此「产线3」这类目录名同样可作为提取目标。
 func buildRuleParts(pathText, target string, from int) (ruleParts, string) {
 	path := strings.TrimSpace(pathText)
 	tgt := strings.TrimSpace(target)
@@ -245,36 +249,54 @@ func buildRuleParts(pathText, target string, from int) (ruleParts, string) {
 
 	parts := reSep.Split(path, -1)
 	file := parts[len(parts)-1]
-	dirRe := ""
-	if len(parts) > 1 {
-		dirRe = `.*[\\\/]`
-	}
+	fileStart := len(path) - len(file)
 
-	// from 是相对样例文件名 file 的字节偏移；单目标模式传 0，
-	// 多目标模式传前一个目标在 file 中的结束位置。
 	if from < 0 {
 		from = 0
 	}
-	if from > len(file) {
-		from = len(file)
+	if from > len(path) {
+		from = len(path)
 	}
 
-	rel := strings.Index(file[from:], tgt)
+	rel := strings.Index(path[from:], tgt)
 	if rel < 0 {
-		return ruleParts{}, "指定字符不在文件名中，请检查是否与路径一致"
+		return ruleParts{}, "指定字符不在样例路径中，请检查是否与路径一致"
 	}
 	idx := from + rel
 	end := idx + len(tgt)
-	loc := locateFrom(file, idx, end, from)
 
-	prefix := buildPrefix(loc.sep, loc.count)
+	dirRe := ""
+	prefix := ""
 	afterRe := ""
-	if loc.after != "" {
-		afterRe = escapeRegex(loc.after)
-	}
 	anchorDesc := "（无）"
-	if loc.sep != "" {
-		anchorDesc = fmt.Sprintf("字段分隔「%s」，跳过 %d 段", loc.sep, loc.count)
+
+	if idx >= fileStart {
+		// 目标位于文件名段：跳到最后一个路径分隔符，再按段内分隔符计数定位。
+		ff := from - fileStart
+		if ff < 0 {
+			ff = 0
+		}
+		loc := locateFrom(file, idx-fileStart, end-fileStart, ff)
+		if len(parts) > 1 {
+			dirRe = `.*[\\\/]`
+		}
+		prefix = buildPrefix(loc.sep, loc.count)
+		if loc.after != "" {
+			afterRe = escapeRegex(loc.after)
+		}
+		if loc.sep != "" {
+			anchorDesc = fmt.Sprintf("字段分隔「%s」，跳过 %d 段", loc.sep, loc.count)
+		}
+	} else {
+		// 目标位于目录段：按整条路径的路径分隔符计数定位。
+		loc := locateFrom(path, idx, end, 0)
+		prefix = buildPrefix(loc.sep, loc.count)
+		if loc.after != "" {
+			afterRe = escapeRegex(loc.after)
+		}
+		if loc.sep != "" {
+			anchorDesc = fmt.Sprintf("目录层级「%s」，跳过 %d 层", loc.sep, loc.count)
+		}
 	}
 
 	return ruleParts{
@@ -291,6 +313,25 @@ func buildRuleParts(pathText, target string, from int) (ruleParts, string) {
 	}, ""
 }
 
+// variantDesc 返回规则说明。严格版字段仅限 ASCII 字母数字，
+// 目标含中文等非 ASCII 字符时补充说明，避免误用。
+func variantDesc(v ruleVariant, target string) string {
+	if v.name == "严格版" && hasNonASCII(target) {
+		return v.desc + "；目标含非 ASCII 字符，该规则无法匹配"
+	}
+	return v.desc
+}
+
+// hasNonASCII 判断字符串是否包含非 ASCII 字符。
+func hasNonASCII(s string) bool {
+	for _, r := range s {
+		if r > unicode.MaxASCII {
+			return true
+		}
+	}
+	return false
+}
+
 // buildRules 根据样例路径与目标值生成五条候选规则（含定长版）。
 func buildRules(pathText, target string) GenerateResult {
 	p, errMsg := buildRuleParts(pathText, target, 0)
@@ -303,7 +344,7 @@ func buildRules(pathText, target string) GenerateResult {
 		rules = append(rules, Rule{
 			Name: v.name,
 			Rec:  v.rec,
-			Desc: v.desc,
+			Desc: variantDesc(v, target),
 			Py:   p.dirRe + p.prefix + v.cap(p) + v.suffix(p),
 		})
 	}
@@ -333,7 +374,7 @@ func buildAdvancedRules(pathText string, targets []string) GenerateResult {
 			return GenerateResult{Error: errMsg}
 		}
 		partsList = append(partsList, p)
-		from += p.end
+		from = p.end
 	}
 
 	rules := make([]Rule, 0, len(ruleVariants))
@@ -352,7 +393,7 @@ func buildAdvancedRules(pathText string, targets []string) GenerateResult {
 		b.WriteString(v.suffix(partsList[len(partsList)-1]))
 
 		name := v.name + "·多关键词"
-		desc := v.desc + "；按输入顺序同时提取 " + fmt.Sprint(len(clean)) + " 个关键词"
+		desc := variantDesc(v, strings.Join(clean, "")) + "；按输入顺序同时提取 " + fmt.Sprint(len(clean)) + " 个关键词"
 		rules = append(rules, Rule{Name: name, Rec: v.rec, Desc: desc, Py: b.String()})
 	}
 
@@ -360,12 +401,13 @@ func buildAdvancedRules(pathText string, targets []string) GenerateResult {
 	return GenerateResult{Rules: rules, Anchor: anchor, File: partsList[0].file}
 }
 
-// toPythonRegex 把 Go 验证用正则转换为深舟平台的 Python 风格规则。
-// 命名组本身就是 Python 风格，只需把字段字符类换成 Python re 兼容的写法。
-// 实测 [^[:punct:][:space:]] 在 Python re 中会匹配失败，[^\W_] 才能正确
-// 匹配中文与字母数字字段。
-func toPythonRegex(py string) string {
-	return strings.ReplaceAll(py, fieldAtom, fieldAtomPy)
+// toPlatformRegex 返回可直接粘贴到深舟平台的正则。
+// 深舟平台使用 Go 正则引擎（RE2），与本文件生成规则所用的引擎完全一致，
+// 因此无需任何字符类转换——原样返回即可。
+// 早期版本按「Python re 兼容」处理，把字段类替换为 [^\W_]，但 Go 的 \w 仅覆盖
+// ASCII，[^\W_] 在平台上匹配不到中文，会让中文目标抽出空值或错误值。
+func toPlatformRegex(py string) string {
+	return py
 }
 
 // toJsRegex 把 Go 验证用正则转换为 JS 验证版。
@@ -412,12 +454,32 @@ func joinedValues(values map[string]string) string {
 	for k := range values {
 		keys = append(keys, k)
 	}
-	sort.Strings(keys)
+	// sn1..snN 按序号排序，避免 sn10 排在 sn2 之前。
+	sort.SliceStable(keys, func(i, j int) bool {
+		ni, oki := snOrder(keys[i])
+		nj, okj := snOrder(keys[j])
+		if oki && okj && ni != nj {
+			return ni < nj
+		}
+		return keys[i] < keys[j]
+	})
 	parts := make([]string, 0, len(keys))
 	for _, k := range keys {
 		parts = append(parts, k+"="+values[k])
 	}
 	return strings.Join(parts, ", ")
+}
+
+// snOrder 解析 sn<数字> 形式的组名，返回其序号。
+func snOrder(k string) (int, bool) {
+	if !strings.HasPrefix(k, "sn") || len(k) == 2 {
+		return 0, false
+	}
+	n, err := strconv.Atoi(k[2:])
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }
 
 // verdict 表示一条规则对某条路径的验证结果。
@@ -456,5 +518,11 @@ func makeVerdict(label, py, path string) verdict {
 	if !ok {
 		return verdict{Label: label, Ok: false, Value: "未匹配"}
 	}
-	return verdict{Label: label, Ok: true, Value: joinedValues(values)}
+	v := joinedValues(values)
+	// 空捕获视为失败：平台对空值同样返回成功，若不在此拦下，
+	// 会生成一条「能存进平台但抽不出内容」的废规则。
+	if strings.TrimSpace(v) == "" {
+		return verdict{Label: label, Ok: false, Value: "提取结果为空"}
+	}
+	return verdict{Label: label, Ok: true, Value: v}
 }
